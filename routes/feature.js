@@ -39,7 +39,14 @@ function markTargetedFeature(feature, targetedScenarioName) {
 router.get(/([^\/]+)\/([\w\W]+)/, function (req, res, next) {
   var projectName = req.params[0];
   var filePath = req.params[1];
+
   var ref = req.query.ref;
+  var commit = req.query.commit;
+
+  // If a specific commit is defined don't try and use the branch.
+  if (commit) {
+    ref = undefined;
+  }
 
   var projectData = {
     name: projectName,
@@ -57,35 +64,50 @@ router.get(/([^\/]+)\/([\w\W]+)/, function (req, res, next) {
   .then(function (projectData) {
     return getFileContents(projectData, filePath);
   })
-  .then(function (fileContents) {
+  .then(function (file) {
+    var fileContents = file.content;
+    var commitPromises = file.commits;
     var feature = {};
     var isFeatureFile = /.*\.feature/.test(filePath);
     var isMarkdownFile = /.*\.md/.test(filePath);
     var originalUrl;
 
-    if (isFeatureFile && !renderPlainFile) {
+    return Promise.all(commitPromises.values())
+      .then(function (commits) {
 
-      try {
-        feature = Parser.parse(fileContents);
-      } catch (err) {
-        originalUrl = url.parse(req.originalUrl);
-        originalUrl.search = originalUrl.search.length ? originalUrl.search + '&plain=true' : '?plain=true';
-        feature.plainFileUrl = url.format(originalUrl);
-        feature.error = err;
-      }
+        // Map and sort the commit info.
+        commits = commits
+                  .map(c => ({
+                    id: c.sha(),
+                    shortId: c.sha().substring(0, 7),
+                    time: c.date().getTime(),
+                    timeStamp: c.date().toUTCString()
+                  }))
+                  .sort((a, b) => a.time - b.time);
 
-      // Determine if a particular scenario was targeted and mark
-      // it so that it can be rendered accordingly.
-      if (targetedScenarioName) {
-        feature = markTargetedFeature(feature, targetedScenarioName);
-      }
+        if (isFeatureFile && !renderPlainFile) {
+          try {
+            feature = Parser.parse(fileContents);
+          } catch (err) {
+            originalUrl = url.parse(req.originalUrl);
+            originalUrl.search = originalUrl.search.length ? originalUrl.search + '&plain=true' : '?plain=true';
+            feature.plainFileUrl = url.format(originalUrl);
+            feature.error = err;
+          }
 
-      res.render('feature', {feature: feature});
-    } else if (isMarkdownFile && !renderPlainFile) {
-      res.render('markdown-file', {markdownHtml: markdown.toHTML(fileContents)});
-    } else {
-      res.render('general-file', {contents: fileContents});
-    }
+          // Determine if a particular scenario was targeted and mark
+          // it so that it can be rendered accordingly.
+          if (targetedScenarioName) {
+            feature = markTargetedFeature(feature, targetedScenarioName);
+          }
+          res.render('feature', {feature: feature, commits: commits});
+
+        } else if (isMarkdownFile && !renderPlainFile) {
+          res.render('markdown-file', {markdownHtml: markdown.toHTML(fileContents)});
+        } else {
+          res.render('general-file', {contents: fileContents});
+        }
+      });
   })
   .catch(function (err) {
     // Pass on to the error handling route.
